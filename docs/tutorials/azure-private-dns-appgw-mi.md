@@ -19,6 +19,7 @@ Therefore, please see the subsequent prerequisites.
 - A VNET is already created and private connectivity is established via ExpressRoute or a Site-to-Site VPN
 - [Azure CLI 2.0](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) and `kubectl` installed on the box to execute the subsequent steps
 - The AKS-IngressApplicationGatewayAddon has been installed and registered: https://docs.microsoft.com/en-us/azure/application-gateway/tutorial-ingress-controller-add-on-new
+- kubectl is installed
 
 ## Deploy a new AKS Cluster with the App Gateway Add-on (AGIC) enabled
 
@@ -42,38 +43,47 @@ AKS with the App Gateway add-on can be enabled at deployment by running the foll
 
 ```
 $ az aks create \
-    --resource-group *your resource group name* \
-    --name *your AKS cluster name* \
+    --resource-group <your resource group name> \
+    --name <your AKS cluster name> \
     --node-count 1 \
     --network-plugin azure \
     --enable-managed-identity \
     --generate-ssh-keys \
     --enable-addons ingress-appgw \
-    --appgw-name *your app gateway name* \
+    --appgw-name <your app gateway name> \
     --kubernetes-version 1.16.9 \
     --docker-bridge-address 172.17.0.1/16 \
     --service-cidr 10.211.0.0/16 \
     --dns-service-ip 10.211.0.10 \
-    --vnet-subnet-id *your vnet subnet id* \
-    --appgw-subnet-id *your app gateway subnet id* \
+    --vnet-subnet-id <your vnet subnet id> \
+    --appgw-subnet-id <your app gateway subnet id> \
     --appgw-watch-namespace default
 ```
   
-The parameter `controller.publishService.enabled` needs to be set to `true.`  
+Once the cluster is deployed, an app gateway instance will be created and tied to AKS.
 
-It will make the ingress controller update the endpoint records of ingress-resources to contain the external-ip of the loadbalancer serving the ingress-controller. 
-This is crucial as ExternalDNS reads those endpoints records when creating DNS-Records from ingress-resources.  
-In the subsequent parameter we will make use of this. If you don't want to work with ingress-resources in your later use, you can leave the parameter out.
+The credentials will need to be merged into your existing kubeconfig file. In my example below, my cluster name is aks-s1 and it resides in the aks-rg resource group.
+```
+$ az aks get-credentials -g aks-rg -n aks-s1
 
-Verify the correct propagation of the loadbalancer's ip by listing the ingresses.
 ```
-$ kubectl get ingress
+
+By default AKS will automatically create a cluster resources group that contains the app gateway instance and the cluster node pools. It will generally follow the format of MC_<resource_group_name>_<cluster_name>_<region>. In my example above, the cluster resources group is *MC_aks-rg_aks-c1_eastus2*. We can query for the addonProfiles
+
 ```
-The address column should contain the ip for each ingress. ExternalDNS will pick up exactly this piece of information.
+$ az aks show --resource-group aks-rg --name aks-c1 --query addonProfiles
+
 ```
-NAME     HOSTS             ADDRESS          PORTS   AGE
-nginx1   sample1.aks.com   52.167.195.110   80      6d22h
-nginx2   sample2.aks.com   52.167.195.110   80      6d21h
+
+The output will be similar to the following:
+```
+"IngressApplicationGateway": {
+    "config": {
+      "applicationGatewayName": "appgw-aks",
+      "effectiveApplicationGatewayId": "/subscriptions/<sub id>/resourceGroups/MC_aks-rg_aks-c1_eastus2/providers/Microsoft.Network/applicationGateways/appgw-aks",
+      "subnetId": "/subscriptions/<sub id>/resourceGroups/AzureHubVNET/providers/Microsoft.Network/virtualNetworks/<VNET name>/subnets/<subnet name>",
+      "watchNamespace": "default"
+    }
 ```
 
 
