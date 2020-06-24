@@ -5,13 +5,14 @@ This tutorial describes how to set up ExternalDNS for managing records in Azure 
 It comprises of the following steps:
 
 1) Installing an AKS Cluster with the App Gateway Add-on.
-2) Provision Azure Private DNS
-3) Configure AAD Pod Identity
-4) Configure a managed identity for managing the zone
-5) Deploy a private front-end IP to the App Gateway Ingress Controller
-6) Deploy ExternalDNS
-7) Deploy a sample app to confirm that ExternalDNS is working with the Ingress Controller.
-8) Deploy a sample app to confirm that ExternalDNS is working with an internal kubernetes service.
+2) Grant permissions to the AKS Cluster over the VNET
+3) Provision Azure Private DNS
+4) Configure AAD Pod Identity
+5) Configure a managed identity for managing the zone
+6) Deploy a private front-end IP to the App Gateway Ingress Controller
+7) Deploy ExternalDNS
+8) Deploy a sample app to confirm that ExternalDNS is working with the Ingress Controller
+9) Deploy a sample app to confirm that ExternalDNS is working with an internal kubernetes service
 
 Everything will be deployed on Kubernetes.
 Therefore, please see the subsequent prerequisites.
@@ -91,6 +92,39 @@ The output will be similar to the following:
     }
 ```
 
+## Grant permissions to the AKS Cluster over the VNET
+
+https://docs.microsoft.com/en-us/azure/aks/configure-azure-cni#prerequisites
+
+As per the prerequisites documented in the link above, the AKS cluster must have at least network contributor to the VNET. However, in highly restricted environments, this may not be an option. The two permissions that need to be granted are as follows:
+    Microsoft.Network/virtualNetworks/subnets/join/action
+    Microsoft.Network/virtualNetworks/subnets/read
+
+In this example, I will be granting the AKS Cluster Network Contributor rights
+
+```
+# Query for the AKS cluster Client ID
+
+$ az aks show -g aks-rg -n aks-c1 --query identity
+
+{
+  "principalId": "<app id>",
+  "tenantId": "<tenant id>",
+  "type": "SystemAssigned"
+}
+
+# Grant Network Contributor to the AKS Cluster
+
+$ az role assignment create --role "Network Contributor" --assignee <app Id> --scope /subscriptions/<SubscriptionID>/resourcegroups/<Network RG>
+
+```
+
+In my example, my cluster is as follows:
+
+```
+az role assignment create --role "Network Contributor" --assignee <appId GUID> --scope /subscriptions/<SubscriptionID>/resourcegroups/AzureHubVNET
+```
+
 ## Provision Azure Private DNS
 
 The provider will find suitable zones for domains it manages. It will not automatically create zones.
@@ -151,7 +185,7 @@ az identity show --name externaldnsmi --resource-group aks-c1-nodes-rg --subscri
 ```
 {
   ...
-  "id": "/subscriptions/72b61f0d-9bea-401f-ba03-2053af77b5e7/resourcegroups/aks-c1-nodes-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/externaldnsmi",
+  "id": "/subscriptions/<Sub id>/resourcegroups/aks-c1-nodes-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/externaldnsmi",
   "location": "eastus2",
   "name": "externaldnsmi",
   "principalId": "<app id>",
@@ -236,6 +270,7 @@ In my example, I will run the following commands:
 az role assignment create --role "Managed Identity Operator" --assignee <AKS ClientID> --scope /subscriptions/<Sub ID>/resourceGroups/aks-c1-nodes-rg
 az role assignment create --role "Virtual Machine Contributor" --assignee <AKS ClientID> --scope /subscriptions/<Sub ID>/resourceGroups/aks-c1-nodes-rg
 az role assignment create --role "Virtual Machine Contributor" --assignee <AKS ClientID> --scope /subscriptions/<Sub ID>/resourceGroups/AzureHubVNet
+az role assignment create --role "Virtual Machine Contributor" --assignee <AKS Node Node Pool ClientID> --scope 
 ```
 
 ## Deploy a private front-end IP to the App Gateway Ingress Controller
@@ -414,9 +449,103 @@ Create the deployment, service and ingress object:
 $ kubectl create -f aspnet.yaml
 ```
 
-Your external IP will have the private IP associated to 
+Your external IP will have the private IP associated to the app gateway ingress service.
 
-Since your external IP would have already been assigned to the nginx-ingress service, the DNS records pointing to the IP of the nginx-ingress service should be created within a minute. 
+```
+$ kubectl get ingress
+
+NAME        HOSTS                   ADDRESS       PORTS   AGE
+aspnetapp   aspnetapp.contoso.com   10.20.2.200   80      16m
+```
+## Deploy a sample app to confirm that ExternalDNS is working with an internal kubernetes service
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: azure-vote-back
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: azure-vote-back
+  template:
+    metadata:
+      labels:
+        app: azure-vote-back
+    spec:
+      nodeSelector:
+        "beta.kubernetes.io/os": linux
+      containers:
+      - name: azure-vote-back
+        image: redis
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        ports:
+        - containerPort: 6379
+          name: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: azure-vote-back
+spec:
+  ports:
+  - port: 6379
+  selector:
+    app: azure-vote-back
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: azure-vote-front
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: azure-vote-front
+  template:
+    metadata:
+      labels:
+        app: azure-vote-front
+    spec:
+      nodeSelector:
+        "beta.kubernetes.io/os": linux
+      containers:
+      - name: azure-vote-front
+        image: microsoft/azure-vote-front:v1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        ports:
+        - containerPort: 80
+        env:
+        - name: REDIS
+          value: "azure-vote-back"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: azure-vote-front
+  annotations:
+     service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+     external-dns.alpha.kubernetes.io/hostname: azure-vote-front.contoso.com
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+  selector:
+    app: azure-vote-front
+```
 
 ## Verify created records
 
@@ -429,3 +558,40 @@ $ az network private-dns record-set a list -g AzureHubVNET -z contoso.com
 Substitute the zone for the one created above if a different domain was used.
 
 This should show the external IP address of the service as the A record for your domain ('@' indicates the record is for the zone itself).
+
+```
+[
+  {
+    "aRecords": [
+      {
+        "ipv4Address": "10.20.2.200"
+      }
+    ],
+    "etag": "22726f62-077e-4a57-a6e1-aed0d1698fbc",
+    "fqdn": "aspnetapp.contoso.com.",
+    "id": "/subscriptions/<Sub ID>/resourceGroups/azurehubvnet/providers/Microsoft.Network/privateDnsZones/contoso.com/A/aspnetapp",
+    "isAutoRegistered": false,
+    "metadata": null,
+    "name": "aspnetapp",
+    "resourceGroup": "azurehubvnet",
+    "ttl": 300,
+    "type": "Microsoft.Network/privateDnsZones/A"
+  },
+  {
+    "aRecords": [
+      {
+        "ipv4Address": "10.20.10.4"
+      }
+    ],
+    "etag": "85174ad9-bf44-45a3-a092-882ce0f67045",
+    "fqdn": "azure-vote-front.contoso.com.",
+    "id": "/subscriptions/<Sub ID>/resourceGroups/azurehubvnet/providers/Microsoft.Network/privateDnsZones/contoso.com/A/azure-vote-front",
+    "isAutoRegistered": false,
+    "metadata": null,
+    "name": "azure-vote-front",
+    "resourceGroup": "azurehubvnet",
+    "ttl": 300,
+    "type": "Microsoft.Network/privateDnsZones/A"
+  }
+]
+```
