@@ -182,7 +182,7 @@ Get the resource ID for the user identity:
 
 ```
 az identity show --name externaldnsmi --resource-group aks-c1-nodes-rg --subscription <sub id>
-```
+
 {
   ...
   "id": "/subscriptions/<Sub id>/resourcegroups/aks-c1-nodes-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/externaldnsmi",
@@ -191,6 +191,7 @@ az identity show --name externaldnsmi --resource-group aks-c1-nodes-rg --subscri
   "principalId": "<app id>",
   ...
 }
+```
 
 
 Next, assign the roles to the user identity.  
